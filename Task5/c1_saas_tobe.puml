@@ -1,0 +1,47 @@
+@startuml C1_SaaS_ToBe
+!define RELATIVE_INCLUDE ../lib
+!include ../lib/C4_Context.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Контекстная диаграмма (C1) — To-Be: SaaS-платформа мониторинга скота
+
+' === Пользователи ===
+Person(tenant_operator, "Оператор фермы\n(клиент SaaS)", "Дежурный на ферме клиента.\nПолучает алерты локально\nчерез edge-агент.")
+Person(tenant_manager, "Управляющий / директор\n(клиент SaaS)", "Управляет фермами\nсвоего холдинга\nчерез веб-портал.")
+Person(saas_admin, "Администратор\nплатформы", "Управляет тенантами,\nтарифами, инфраструктурой.")
+Person(developer, "Разработчик\n(клиент API)", "Интегрирует SaaS API\nв системы клиента.")
+
+' === Основная система ===
+Enterprise_Boundary(saas_platform, "SaaS-платформа мониторинга скота (To-Be)") {
+    System(saas_core, "SaaS Core Platform", "Мультитенантная платформа:\nизоляция данных по схемам БД,\nбиллинг, API, dev-портал,\nуправление клиентами.")
+
+    System(farm_agent, "Edge AI Агент\n(на фермах клиента)", "Локальная обработка видео (AI),\nавтономная работа без интернета,\nсинхронизация данных с SaaS.")
+}
+
+' === Внешние системы ===
+System_Ext(agrotech_erp, "АгроПром Х\n(ERP / DWH — внутренний клиент)", "Существующие системы\nкомпании-владельца SaaS.\nИнтегрируется как первый клиент.")
+
+System_Ext(payment_ru, "Российские платёжные\nсистемы", "ЮКасса, Сбербанк Бизнес,\nТинькофф. Биллинг подписок.")
+
+System_Ext(ext_tenant_systems, "Системы клиентов\n(ERP, BI, другие)", "Внешние системы\nагрохолдингов-клиентов.\nИнтегрируются через публичный API.")
+
+System_Ext(notifications, "Каналы уведомлений", "SMS, Push, Email, Telegram-бот.\nОповещение операторов и менеджеров.")
+
+System_Ext(iot_hardware, "IoT-оборудование\nферм клиентов", "Камеры, датчики, кормушки,\nпоилки — на площадках клиентов.")
+
+' === Связи ===
+Rel(tenant_operator, farm_agent, "Получает локальные алерты,\nуправляет оборудованием", "Локальный веб / мобильное приложение")
+Rel(tenant_manager, saas_core, "Мониторинг ферм, отчёты,\nуправление подпиской", "Веб-портал / REST API")
+Rel(saas_admin, saas_core, "Управление тенантами,\nтарифами, мониторинг", "Admin Panel")
+Rel(developer, saas_core, "Интеграция через API,\nдокументация, SDK", "Developer Portal / REST API")
+
+Rel(farm_agent, saas_core, "Синхронизация событий,\nметрик и поголовья\n(batch, до 10 мин)", "HTTPS REST / TLS")
+Rel(farm_agent, iot_hardware, "Управление устройствами,\nсбор видео и телеметрии", "RTSP / MQTT / Modbus")
+
+Rel(saas_core, payment_ru, "Биллинг подписок,\nприём платежей", "HTTPS REST API")
+Rel(saas_core, notifications, "Оповещения менеджерам\nи ветеринарам", "SMS / Push / Email")
+Rel(saas_core, agrotech_erp, "Передача данных в ERP/DWH\n(как внутренний клиент)", "REST API / Webhooks")
+Rel(ext_tenant_systems, saas_core, "Получение данных мониторинга\nчерез публичный API", "REST API / Webhooks")
+
+@enduml

@@ -1,0 +1,139 @@
+@startuml C4_Main_InferenceEngine
+!define RELATIVE_INCLUDE ../lib
+!include ../lib/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Диаграмма кода (C4) — Основное решение: Edge-first\nКомпонент: Inference Engine (AI Engine контейнер)
+
+skinparam class {
+    BackgroundColor #85BBF0
+    BorderColor #78A8D8
+    FontColor #000000
+    ArrowColor #555555
+}
+skinparam backgroundColor white
+skinparam shadowing false
+
+package "inference_engine (модуль Python)" {
+
+    class InferenceEngine {
+        - model: ONNXModel
+        - config: InferenceConfig
+        - gpu_session: ort.InferenceSession
+        --
+        + __init__(config: InferenceConfig)
+        + load_model(model_path: str): void
+        + infer_batch(frames: List[np.ndarray]): List[Detection]
+        + reload_model(new_model_path: str): void
+        + get_stats(): EngineStats
+        - _warm_up(): void
+    }
+
+    class ONNXModel {
+        - model_path: str
+        - checksum: str
+        - metadata: ModelMetadata
+        - session: ort.InferenceSession
+        --
+        + load(path: str): ONNXModel
+        + validate_checksum(): bool
+        + get_input_shape(): Tuple[int,...]
+        + get_output_names(): List[str]
+        + run(inputs: Dict): Dict[str, np.ndarray]
+    }
+
+    class InferenceConfig {
+        + model_path: str
+        + device: str  ' "cuda" | "cpu"
+        + batch_size: int
+        + input_size: Tuple[int, int]
+        + confidence_threshold: float
+        + providers: List[str]
+        + trt_engine_cache_path: str
+        --
+        + from_env(): InferenceConfig
+        + validate(): void
+    }
+
+    class FrameBatch {
+        - frames: List[np.ndarray]
+        - farm_id: str
+        - camera_ids: List[str]
+        - timestamps: List[datetime]
+        - batch_id: str
+        --
+        + add_frame(frame, cam_id, ts): void
+        + is_full(): bool
+        + to_tensors(): np.ndarray
+        + size(): int
+    }
+
+    class Detection {
+        + bbox: BoundingBox
+        + class_id: int
+        + class_name: str
+        + confidence: float
+        + frame_id: str
+        + camera_id: str
+        + timestamp: datetime
+        --
+        + to_dict(): dict
+    }
+
+    class BoundingBox {
+        + x1: float
+        + y1: float
+        + x2: float
+        + y2: float
+        --
+        + area(): float
+        + iou(other: BoundingBox): float
+        + center(): Tuple[float, float]
+    }
+
+    class TensorRTProvider {
+        - trt_cache_path: str
+        - fp16_mode: bool
+        --
+        + get_provider_options(): dict
+        + build_engine_if_needed(model: ONNXModel): void
+    }
+
+    class EngineStats {
+        + inference_count: int
+        + avg_latency_ms: float
+        + p99_latency_ms: float
+        + fps: float
+        + gpu_memory_used_mb: int
+        + model_version: str
+        --
+        + to_prometheus_labels(): dict
+    }
+}
+
+' Relationships
+InferenceEngine --> ONNXModel : использует
+InferenceEngine --> InferenceConfig : конфигурируется
+InferenceEngine --> TensorRTProvider : оптимизирует на GPU
+InferenceEngine ..> FrameBatch : принимает
+InferenceEngine ..> Detection : возвращает List<>
+InferenceEngine --> EngineStats : накапливает
+Detection --> BoundingBox : содержит
+ONNXModel --> TensorRTProvider : использует провайдер
+
+note right of InferenceEngine
+  Запускается как singleton
+  в рамках AI Engine контейнера.
+  reload_model() не прерывает
+  текущий батч (thread-safe).
+end note
+
+note bottom of TensorRTProvider
+  TensorRT кэширует скомпилированный
+  движок на диск. При первом запуске
+  компиляция занимает 1-5 минут.
+  Последующие запуски — мгновенны.
+end note
+
+@enduml

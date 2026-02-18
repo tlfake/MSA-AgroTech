@@ -1,0 +1,104 @@
+@startuml C2_SaaS_ToBe
+!define RELATIVE_INCLUDE ../lib
+!include ../lib/C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Контейнерная диаграмма (C2) — To-Be: SaaS-платформа мониторинга скота\nВыбранная изоляция: Schema-per-Tenant (вариант A)
+
+Person(tenant_manager, "Управляющий\n(клиент SaaS)", "Управляет своими фермами")
+Person(tenant_operator, "Оператор фермы\n(клиент SaaS)", "Работает на ферме")
+Person(saas_admin, "Администратор\nплатформы", "Управляет SaaS")
+Person(developer, "Разработчик-клиент", "Интегрирует API")
+
+System_Ext(farm_edge, "Edge AI Агент\n(на фермах клиентов)", "Агент Решения А\nна каждой ферме клиента")
+System_Ext(payment_ru, "Платёжные системы РФ", "ЮКасса, Сбербанк")
+System_Ext(ext_systems, "Системы клиентов\n(ERP, BI)", "Внешние интеграции")
+System_Ext(notif_channels, "Каналы уведомлений", "SMS / Push / Email")
+
+Enterprise_Boundary(saas, "SaaS-платформа мониторинга скота") {
+
+    Container(cdn_web, "CDN / Web Portal", "React + CloudFront", "Мультитенантный SPA.\nТенант по subdomain.\nАдаптивный дашборд.")
+
+    Container(dev_portal, "Developer Portal", "Docusaurus", "Документация OpenAPI,\nSDK (Python, JS),\nself-service API-ключи,\nwebhook-настройка.")
+
+    Container(api_gw, "API Gateway", "Kong", "TLS-терминация.\nJWT + tenant_id claim.\nRate-limiting per tenant.\nVersioned API routing.")
+
+    Container(auth_svc, "Auth Service", "Keycloak", "Мультитенантный IAM.\nOAuth2 / OIDC / SAML.\nКаждый тенант — realm.\nRBAC: admin, manager, vet, operator.")
+
+    Container(tenant_svc, "Tenant Service", "Go", "Регистрация и онбординг\nклиентов.\nСоздание схемы БД,\nвыдача API-ключей,\nуправление тарифными планами.")
+
+    Container(farm_svc, "Farm Service", "Go", "Управление фермами тенанта:\nданные, конфигурация,\nпоголовье, события, алерты.\nПишет/читает в схему тенанта.")
+
+    Container(analytics_svc, "Analytics Service", "Python / FastAPI", "Аналитика и прогнозы:\nтренды поголовья,\nрасход корма,\nсводные метрики по фермам.")
+
+    Container(alert_svc, "Alert Service", "Go", "Агрегация алертов тенанта.\nПравила и эскалация.\nПуш уведомлений.")
+
+    Container(sync_receiver, "Sync Receiver", "Go", "Принимает batch-данные\nот Edge AI агентов.\nОпределяет тенанта по API-ключу.\nПишет в нужную схему.")
+
+    Container(billing_svc, "Billing Service", "Go", "Тарификация (per-farm, per-event).\nПодписочные планы.\nВыставление счетов.\nИнтеграция с ЮКасса/Сбербанк.\nMeter API для usage-метрик.")
+
+    Container(public_api_svc, "Public API Service", "Go / OpenAPI 3.0", "REST API для клиентских\nинтеграций.\nWebhooks на события.\nAPI-ключи с scoped доступом.\nRate-limiting по тарифу.")
+
+    Container(notification_svc, "Notification Service", "Go", "Маршрутизация уведомлений:\nSMS, Push, Email, Telegram.\nПодписки и настройки по ролям.")
+
+    Container(metrics_svc, "Metrics & Usage Service", "Go / Prometheus", "Платформенные метрики.\nMetering для биллинга.\nSLA-мониторинг per tenant.")
+
+    Container(admin_api, "Admin API", "Go", "Внутренний API платформы\nдля saas_admin:\nуправление тенантами,\nмониторинг, инциденты.")
+
+    ContainerDb(shared_pg, "Shared PostgreSQL\n(schema-per-tenant)", "PostgreSQL 16 + RLS", "Одна БД кластер.\nСхема tenant_{id} на клиента.\nRLS + search_path.\nMax ~1000 тенантов.")
+
+    ContainerDb(shared_tsdb, "Shared TimescaleDB\n(schema-per-tenant)", "TimescaleDB", "Временные ряды событий\nи метрик per-tenant схема.")
+
+    ContainerDb(billing_db, "Billing Database", "PostgreSQL", "Подписки, счета, платежи,\nusage-метрики.")
+
+    ContainerDb(config_store, "Config & Tenant Registry", "PostgreSQL", "Реестр тенантов, схем,\nAPI-ключей, тарифов,\nwebhook endpoints.")
+}
+
+' === Пользователи ===
+Rel(tenant_manager, cdn_web, "Дашборды, отчёты,\nуправление подпиской", "HTTPS")
+Rel(tenant_operator, cdn_web, "Мониторинг фермы", "HTTPS")
+Rel(saas_admin, admin_api, "Управление платформой", "HTTPS / Admin UI")
+Rel(developer, dev_portal, "Документация, SDK,\nAPI-ключи", "HTTPS")
+
+' === Внешние ===
+Rel(farm_edge, sync_receiver, "Batch-синхронизация\nданных фермы\n(API-ключ тенанта)", "HTTPS REST / TLS")
+Rel(ext_systems, public_api_svc, "Интеграция: получение\nданных мониторинга", "REST API / Webhooks")
+Rel(billing_svc, payment_ru, "Проведение платежей\nи рекуррентных списаний", "HTTPS REST API")
+Rel(notification_svc, notif_channels, "Отправка уведомлений", "SMS API / Firebase / SMTP")
+
+' === Внутренние связи ===
+Rel(cdn_web, api_gw, "API запросы", "HTTPS REST / WebSocket")
+Rel(api_gw, auth_svc, "Валидация JWT, tenant_id", "Internal HTTP")
+Rel(api_gw, farm_svc, "Данные ферм", "Internal HTTP")
+Rel(api_gw, analytics_svc, "Аналитика", "Internal HTTP")
+Rel(api_gw, alert_svc, "Алерты", "Internal HTTP")
+Rel(api_gw, billing_svc, "Биллинг", "Internal HTTP")
+Rel(api_gw, public_api_svc, "Public API", "Internal HTTP")
+Rel(api_gw, tenant_svc, "Управление тенантом", "Internal HTTP")
+
+Rel(tenant_svc, shared_pg, "Создание схемы тенанта\nпри онбординге", "SQL DDL")
+Rel(tenant_svc, config_store, "Запись реестра тенанта", "SQL")
+
+Rel(sync_receiver, config_store, "Lookup API-ключ → tenant_id", "SQL")
+Rel(sync_receiver, shared_pg, "Запись в схему тенанта", "SQL (search_path)")
+Rel(sync_receiver, shared_tsdb, "Метрики в схему тенанта", "SQL (search_path)")
+Rel(sync_receiver, metrics_svc, "Usage-события для биллинга", "Internal HTTP")
+
+Rel(farm_svc, shared_pg, "Данные схемы тенанта", "SQL (search_path)")
+Rel(farm_svc, shared_tsdb, "Временные ряды тенанта", "SQL (search_path)")
+Rel(farm_svc, alert_svc, "Публикация алертов", "Internal HTTP")
+
+Rel(analytics_svc, shared_tsdb, "Аналитические запросы", "SQL")
+Rel(analytics_svc, shared_pg, "Данные ферм и поголовья", "SQL")
+
+Rel(alert_svc, notification_svc, "Отправка уведомлений", "Internal HTTP")
+Rel(alert_svc, public_api_svc, "Webhook-события", "Internal HTTP")
+
+Rel(billing_svc, billing_db, "Счета, подписки, платежи", "SQL")
+Rel(metrics_svc, billing_svc, "Usage-метрики для тарификации", "Internal HTTP")
+
+Rel(public_api_svc, farm_svc, "Проксирование данных", "Internal HTTP")
+Rel(public_api_svc, alert_svc, "Алерты через API", "Internal HTTP")
+
+@enduml

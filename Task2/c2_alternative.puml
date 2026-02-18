@@ -1,0 +1,116 @@
+@startuml C2_Alternative_Solution
+!define RELATIVE_INCLUDE ../lib
+!include ../lib/C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Контейнерная диаграмма (C2) — Альтернативное решение: Централизованная архитектура\nПлатформа мониторинга свиноводческих ферм
+
+' === Пользователи ===
+Person(operator, "Оператор фермы", "Дежурный сотрудник на ферме")
+Person(manager, "Управляющий / Директор", "Контролирует все фермы удалённо")
+Person(vet, "Ветеринар", "Отслеживает здоровье животных")
+
+' ================================================================
+System_Boundary(farm_gw, "IoT-шлюз фермы — один экземпляр на каждую ферму (лёгкий агент)") {
+
+    Container(cam_proxy, "Camera Proxy", "Python / FFmpeg", "Ретранслирует RTSP-потоки\nс камер в облако.\nПересжатие видео при\nнизкой полосе пропускания.")
+
+    Container(sensor_collector, "Sensor Collector", "Python / Node-RED", "Сбор данных с датчиков\n(кормушки, поилки, вода).\nПротоколы: MQTT, Modbus,\nREST API устройств.")
+
+    Container(gw_broker, "Gateway MQTT Broker", "Mosquitto", "Локальный MQTT-брокер.\nПринимает данные с IoT-устройств,\nпроксирует команды.\nРаботает без интернета.")
+
+    ContainerDb(gw_buffer, "Local Buffer", "SQLite", "Буферизует данные при\nпотере связи с облаком.\nАвтоматическая отправка\nпосле восстановления.")
+
+    Container(gw_sync, "Sync Client", "Go", "Отправляет буферизованные\nданные в центральную платформу.\nПолучает команды управления\nустройствами.")
+
+    Container(gw_notifier, "Local Notifier", "Python", "Оповещает оператора при\nпотере связи с облаком:\nSMS (GSM-модем).\nМинимальная логика алертов.")
+}
+
+' ================================================================
+System_Boundary(central, "Централизованная платформа мониторинга (Cloud / On-premise ЦОД)") {
+
+    Container(api_gateway, "API Gateway", "Kong / Nginx", "Единая точка входа.\nAутентификация (OAuth2/OIDC),\nrouting, rate-limiting, TLS.")
+
+    Container(auth_service, "Auth Service", "Go / Keycloak", "IAM: роли и пользователи\n(оператор, ветеринар, директор).\nOAuth2 / OpenID Connect.")
+
+    Container(video_ingestor, "Video Ingestor", "Python / GStreamer", "Приём RTSP-потоков со всех ферм.\nДемультиплексирование,\nнарезка фреймов,\nпубликация в брокер.")
+
+    Container(ai_engine, "AI Engine Cluster", "Python / Triton\nInference Server", "Кластер для инференса\nнейросетевых моделей на GPU.\nМасштабируется по нагрузке.\nОбрабатывает потоки всех ферм.")
+
+    Container(event_processor, "Event Processor", "Go / Kafka Streams", "Обрабатывает события\nот AI Engine. Применяет правила,\nформирует алерты.\nОтправляет уведомления.")
+
+    Container(device_service, "Device Service", "Go", "Управляет устройствами ферм\nчерез IoT-шлюзы:\nкомандование кормушками,\nпоилками, датчиками.")
+
+    Container(farm_service, "Farm Service", "Go", "Управление данными ферм:\nсписок, статус, конфигурация,\nпоголовье, события, метрики.")
+
+    Container(alert_service, "Alert Service", "Go", "Агрегация и маршрутизация\nалертов. Правила эскалации.\nОтправка уведомлений всем ролям.")
+
+    Container(analytics_service, "Analytics Service", "Python / FastAPI", "Сводная аналитика:\nтренды, прогноз расхода корма,\nдинамика поголовья.")
+
+    Container(web_portal, "Web Portal", "React / TypeScript", "SPA для управляющих,\nветеринаров и операторов.\nДашборды, алерты, история,\nпрямая трансляция видео.")
+
+    Container(notification_service, "Notification Service", "Go", "Отправка уведомлений:\nPush, Email, SMS для\nвсех ролей.")
+
+    Container(metrics_service, "Metrics Service", "Go / Prometheus", "Агрегация метрик со всех ферм.\nPrometheus-эндпоинты.\nПоддержка кастомных метрик.")
+
+    Container(central_broker, "Message Broker", "Apache Kafka", "Центральная шина событий.\nПотоки видеособытий, телеметрия\nс ферм, команды устройствам.\nГарантированная доставка.")
+
+    ContainerDb(central_db, "Central Database", "PostgreSQL", "Структурированные данные:\nфермы, пользователи, события,\nалерты, настройки, поголовье.")
+
+    ContainerDb(timeseries_db, "Time Series DB", "TimescaleDB", "Временные ряды: метрики\nдатчиков, события аналитики,\nпараметры среды всех ферм.")
+
+    ContainerDb(video_store, "Video Storage", "MinIO (S3)", "Хранение видеозаписей\nс ферм для просмотра\nи разбора инцидентов.")
+
+    ContainerDb(gpu_infra, "GPU Cluster", "NVIDIA A100 / H100", "Вычислительная инфраструктура\nдля видеоаналитики.\nАвтоскейлинг под нагрузку.")
+}
+
+' ================================================================
+System_Ext(agrotech, "АгроПром Х (ERP / DWH / BI)", "Существующая платформа компании")
+System_Ext(ext_notifications, "Внешние каналы уведомлений", "SMS-шлюз, Firebase Push, SMTP")
+System_Ext(iot_hw, "IoT-оборудование фермы", "Камеры, датчики, кормушки, поилки")
+
+' ================================================================
+' Ферма ↔ оборудование
+Rel(iot_hw, cam_proxy, "RTSP видеопотоки", "RTSP / H.264")
+Rel(iot_hw, gw_broker, "Данные датчиков", "MQTT / Modbus")
+Rel(gw_broker, sensor_collector, "IoT-события", "MQTT")
+Rel(sensor_collector, gw_buffer, "Буферизация", "SQLite")
+Rel(gw_sync, gw_buffer, "Читает данные", "SQLite")
+
+' Ферма ↔ центр
+Rel(cam_proxy, video_ingestor, "Видеопоток в облако", "RTSP / WebRTC / TLS")
+Rel(gw_sync, api_gateway, "Телеметрия, данные датчиков", "HTTPS REST / TLS")
+Rel(device_service, gw_sync, "Команды устройствам", "HTTPS / MQTT")
+Rel(gw_notifier, operator, "Локальные SMS при офлайне", "GSM")
+
+' Внутри центральной платформы
+Rel(video_ingestor, central_broker, "Фреймы видео", "Kafka")
+Rel(video_ingestor, video_store, "Сохранение видео", "S3 API")
+Rel(central_broker, ai_engine, "Фреймы для инференса", "Kafka")
+Rel(ai_engine, gpu_infra, "GPU инференс", "Internal")
+Rel(ai_engine, central_broker, "События детекции", "Kafka")
+Rel(central_broker, event_processor, "События от AI", "Kafka")
+Rel(event_processor, central_db, "Сохранение событий", "SQL")
+Rel(event_processor, alert_service, "Алерты", "Internal HTTP")
+Rel(alert_service, notification_service, "Уведомления", "Internal HTTP")
+Rel(api_gateway, auth_service, "Проверка токенов", "Internal HTTP")
+Rel(api_gateway, farm_service, "Данные ферм", "Internal HTTP")
+Rel(api_gateway, device_service, "Управление устройствами", "Internal HTTP")
+Rel(api_gateway, alert_service, "Алерты", "Internal HTTP")
+Rel(api_gateway, analytics_service, "Аналитика", "Internal HTTP")
+Rel(api_gateway, metrics_service, "Метрики", "Internal HTTP")
+Rel(farm_service, central_db, "Чтение/запись данных ферм", "SQL")
+Rel(farm_service, timeseries_db, "Временные ряды", "SQL")
+Rel(analytics_service, timeseries_db, "Аналитические запросы", "SQL")
+Rel(metrics_service, timeseries_db, "Метрики", "SQL")
+Rel(notification_service, ext_notifications, "Push, Email, SMS", "HTTPS API / SMTP")
+Rel(farm_service, agrotech, "Передача в ERP/DWH", "REST API / ETL")
+
+' Пользователи ↔ центр
+Rel(manager, web_portal, "Мониторинг ферм, отчёты", "HTTPS")
+Rel(vet, web_portal, "Состояние животных, алерты", "HTTPS")
+Rel(operator, web_portal, "Управление оборудованием,\nпросмотр событий", "HTTPS")
+Rel(web_portal, api_gateway, "API-запросы", "HTTPS / REST / WebSocket")
+
+@enduml
