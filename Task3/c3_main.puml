@@ -1,0 +1,60 @@
+@startuml C3_Main_AIEngine
+!define RELATIVE_INCLUDE ../lib
+!include ../lib/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Компонентная диаграмма (C3) — Основное решение: Edge-first\nКонтейнер: AI Engine (Агент фермы)
+
+' === Внешние участники и контейнеры ===
+Person(operator, "Оператор фермы", "Дежурный сотрудник")
+
+Container(video_ingestor, "Video Ingestor", "Python / GStreamer", "Поставляет фреймы для анализа")
+Container(local_broker, "Local Broker", "RabbitMQ", "Внутренняя шина сообщений фермы")
+Container(event_processor, "Event Processor", "Python / Go", "Обрабатывает события детекции")
+Container(local_db, "Local Database", "PostgreSQL", "Хранилище событий и метрик")
+ContainerDb(model_store, "Model Storage", "Локальная ФС / MinIO", "Хранилище версий нейросетевых моделей")
+
+' === AI Engine контейнер ===
+Container_Boundary(ai_engine, "AI Engine — контейнер на edge-сервере фермы") {
+
+    Component(frame_consumer, "Frame Consumer", "Python / pika (AMQP)", "Подписывается на очередь фреймов\nв RabbitMQ. Формирует батчи\nфреймов для инференса.")
+
+    Component(preprocessor, "Frame Preprocessor", "Python / OpenCV", "Преобработка фреймов:\nресайз, нормализация, цветовая\nкоррекция. Подготовка к инференсу.")
+
+    Component(inference_engine, "Inference Engine", "Python / ONNX Runtime\n+ TensorRT", "Запуск нейросетевой модели на GPU.\nДинамическое батчирование фреймов.\nВозвращает bbox, классы, score.")
+
+    Component(model_manager, "Model Manager", "Python", "Загрузка активной версии модели\nиз хранилища. Горячая замена модели\nбез перезапуска сервиса.\nВалидация целостности (checksum).")
+
+    Component(tracker, "Object Tracker", "Python / custom SORT", "Трекинг объектов между кадрами\n(алгоритм SORT/ByteTrack).\nПрисваивает животным временные ID\nдля отслеживания поведения.")
+
+    Component(behavior_analyzer, "Behavior Analyzer", "Python", "Анализирует траектории и позы\nживотных. Детектирует: драки,\nбеспокойство, задавливание поросят,\nгибель, болезненный вид.")
+
+    Component(headcount_counter, "Headcount Counter", "Python", "Подсчёт поголовья на кадре.\nАгрегация по времени.\nОбнаружение аномалий в численности.")
+
+    Component(event_publisher, "Event Publisher", "Python / pika (AMQP)", "Публикует события детекции в\nRabbitMQ для Event Processor.\nФормирует структурированные\nсобытия с метаданными.")
+
+    Component(health_monitor, "Health Monitor", "Python", "Мониторинг состояния самого\nAI Engine: FPS, latency GPU,\nочередь фреймов. Экспорт метрик\nв Prometheus формате.")
+}
+
+' === Связи ===
+Rel(video_ingestor, local_broker, "Публикует фреймы", "AMQP")
+Rel(local_broker, frame_consumer, "Фреймы для инференса", "AMQP / subscribe")
+
+Rel(frame_consumer, preprocessor, "Сырые фреймы", "In-process")
+Rel(preprocessor, inference_engine, "Нормализованные тензоры", "In-process")
+Rel(inference_engine, tracker, "Bbox + классы + score", "In-process")
+Rel(tracker, behavior_analyzer, "Треки объектов", "In-process")
+Rel(tracker, headcount_counter, "Треки объектов", "In-process")
+Rel(behavior_analyzer, event_publisher, "События поведения", "In-process")
+Rel(headcount_counter, event_publisher, "События пересчёта", "In-process")
+
+Rel(model_manager, model_store, "Загружает модель", "FS / HTTP")
+Rel(model_manager, inference_engine, "Обновляет загруженную модель", "In-process")
+
+Rel(event_publisher, local_broker, "Публикует события детекции", "AMQP / publish")
+Rel(local_broker, event_processor, "События детекции", "AMQP")
+
+Rel(health_monitor, local_db, "Пишет метрики", "SQL")
+
+@enduml

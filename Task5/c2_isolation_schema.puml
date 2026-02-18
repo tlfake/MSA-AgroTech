@@ -1,0 +1,57 @@
+@startuml C2_Isolation_SchemaPerTenant
+!define RELATIVE_INCLUDE ../lib
+!include ../lib/C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Вариант изоляции данных A: Схема на тенанта (Schema-per-Tenant)\nОдна СУБД, отдельная схема для каждого клиента
+
+Person(tenant_user, "Пользователь клиента", "Оператор / менеджер\nфермерского холдинга")
+Person(admin, "Платформенный\nадминистратор", "Управляет SaaS-платформой")
+
+System_Ext(farm_edge, "Edge-агент фермы\n(клиентское оборудование)", "Edge AI агент на ферме\nклиента (Решение А)")
+System_Ext(payment, "Платёжные системы\n(ЮКасса, Сбербанк)", "Российские платёжные шлюзы")
+
+Enterprise_Boundary(saas, "SaaS-платформа мониторинга скота") {
+
+    Container(api_gw, "API Gateway", "Kong", "JWT + tenant claim проверка.\nМаршрутизация по тенанту.\nRate-limiting per tenant.")
+
+    Container(auth, "Auth Service", "Keycloak", "Мультитенантный IAM.\nКаждый клиент — отдельный realm.\nOAuth2/OIDC.")
+
+    Container(tenant_svc, "Tenant Service", "Go", "Управление тенантами:\nрегистрация, тарифы,\nсоздание схемы при онбординге.")
+
+    Container(farm_svc, "Farm & Analytics Service", "Go / Python", "Бизнес-логика: данные ферм,\nалерты, аналитика.\nИспользует schema из контекста\nтенанта (search_path).")
+
+    Container(billing_svc, "Billing Service", "Go", "Тарификация, выставление счетов,\nсбор метрик использования,\nинтеграция с платёжными системами.")
+
+    Container(dev_portal, "Developer Portal", "Docusaurus / React", "Документация API, SDK,\nсамообслуживание клиентов:\nonboarding, ротация ключей.")
+
+    Container(web_ui, "Web UI (Multi-tenant SPA)", "React", "Единый фронтенд.\nТенант определяется\nпо subdomain или JWT claim.")
+
+    Container(sync_receiver, "Sync Receiver", "Go", "Принимает данные от edge-агентов.\nОпределяет тенанта по API-ключу.\nПишет в нужную схему БД.")
+
+    ContainerDb(shared_db, "Shared PostgreSQL\n(schema-per-tenant)", "PostgreSQL 16", "Одна БД, схемы: tenant_001, tenant_002…\nRow-Level Security + search_path.\nМаксимум ~500–1000 тенантов.")
+
+    ContainerDb(shared_tsdb, "Shared TimescaleDB\n(schema-per-tenant)", "TimescaleDB", "Временные ряды метрик и событий.\nОтдельная схема на тенанта.\nГипертаблицы per-schema.")
+
+    ContainerDb(billing_db, "Billing Database", "PostgreSQL", "Счета, подписки, метрики\nиспользования. Общая схема.")
+}
+
+Rel(tenant_user, web_ui, "Работает с платформой", "HTTPS")
+Rel(admin, tenant_svc, "Управляет тенантами", "HTTPS / Admin API")
+Rel(web_ui, api_gw, "API запросы", "HTTPS / REST / WebSocket")
+Rel(api_gw, auth, "Валидация токена", "Internal HTTP")
+Rel(api_gw, farm_svc, "Данные ферм, алерты", "Internal HTTP")
+Rel(api_gw, billing_svc, "Биллинг, подписка", "Internal HTTP")
+Rel(api_gw, tenant_svc, "Управление тенантом", "Internal HTTP")
+Rel(farm_edge, sync_receiver, "Синхронизация данных\n(API-ключ тенанта)", "HTTPS REST / TLS")
+Rel(sync_receiver, shared_db, "Пишет в схему tenant_XXX", "SQL (search_path)")
+Rel(sync_receiver, shared_tsdb, "Метрики в схему tenant_XXX", "SQL (search_path)")
+Rel(farm_svc, shared_db, "Читает/пишет схему тенанта", "SQL (search_path)")
+Rel(farm_svc, shared_tsdb, "Временные ряды тенанта", "SQL (search_path)")
+Rel(billing_svc, billing_db, "Счета и подписки", "SQL")
+Rel(billing_svc, payment, "Проведение платежей", "HTTPS / REST")
+Rel(tenant_svc, shared_db, "Создаёт схему при онбординге", "SQL DDL")
+Rel(tenant_user, dev_portal, "Документация, SDK, onboarding", "HTTPS")
+
+@enduml

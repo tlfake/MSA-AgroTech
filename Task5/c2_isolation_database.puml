@@ -1,0 +1,66 @@
+@startuml C2_Isolation_DatabasePerTenant
+!define RELATIVE_INCLUDE ../lib
+!include ../lib/C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Вариант изоляции данных B: База данных на тенанта (DB-per-Tenant)\nОдин кластер СУБД, отдельная БД для каждого клиента
+
+Person(tenant_user, "Пользователь клиента", "Оператор / менеджер\nфермерского холдинга")
+Person(admin, "Платформенный\nадминистратор", "Управляет SaaS-платформой")
+
+System_Ext(farm_edge, "Edge-агент фермы\n(клиентское оборудование)", "Edge AI агент на ферме\nклиента (Решение А)")
+System_Ext(payment, "Платёжные системы\n(ЮКасса, Сбербанк)", "Российские платёжные шлюзы")
+
+Enterprise_Boundary(saas, "SaaS-платформа мониторинга скота") {
+
+    Container(api_gw, "API Gateway", "Kong", "JWT + tenant claim проверка.\nМаршрутизация по тенанту.\nRate-limiting per tenant.")
+
+    Container(auth, "Auth Service", "Keycloak", "Мультитенантный IAM.\nКаждый клиент — realm.\nOAuth2/OIDC.")
+
+    Container(tenant_svc, "Tenant Service", "Go", "Управление тенантами.\nПровизионирует новую БД\nпри регистрации клиента.\nХранит connection strings.")
+
+    Container(farm_svc, "Farm & Analytics Service", "Go / Python", "Бизнес-логика.\nДинамически подключается\nк БД тенанта по connection pool.\nИзоляция на уровне БД.")
+
+    Container(billing_svc, "Billing Service", "Go", "Тарификация, выставление счетов,\nметрики использования,\nинтеграция с платёжными системами.")
+
+    Container(dev_portal, "Developer Portal", "Docusaurus / React", "Документация API, SDK,\nсамообслуживание при onboarding.")
+
+    Container(web_ui, "Web UI (Multi-tenant SPA)", "React", "Единый фронтенд.\nТенант по subdomain / JWT.")
+
+    Container(sync_receiver, "Sync Receiver", "Go", "Принимает данные от edge-агентов.\nОпределяет тенанта по API-ключу.\nМаршрутизирует в БД тенанта.")
+
+    Container(db_provisioner, "DB Provisioner", "Go", "Автоматически создаёт новую БД\nв кластере при онбординге.\nПрименяет миграции (Flyway/Goose).\nМониторинг размера БД.")
+
+    ContainerDb(pg_cluster, "PostgreSQL Cluster\n(db-per-tenant)", "PostgreSQL + Citus\nили PgBouncer", "Один кластер, N баз данных:\ndb_tenant_001, db_tenant_002…\nКаждая БД полностью изолирована.\nРеально до ~3000–5000 тенантов.")
+
+    ContainerDb(ts_cluster, "TimescaleDB Cluster\n(db-per-tenant)", "TimescaleDB", "Один кластер, N баз данных.\nГипертаблицы per-tenant DB.\nПолная изоляция временных рядов.")
+
+    ContainerDb(billing_db, "Billing Database", "PostgreSQL", "Счета, подписки, метрики\nиспользования. Общая схема.")
+
+    ContainerDb(tenant_registry, "Tenant Registry", "PostgreSQL", "Реестр тенантов:\nconnection strings, статус,\nтарифный план, API-ключи.")
+}
+
+Rel(tenant_user, web_ui, "Работает с платформой", "HTTPS")
+Rel(admin, tenant_svc, "Управляет тенантами", "HTTPS / Admin API")
+Rel(web_ui, api_gw, "API запросы", "HTTPS / REST / WebSocket")
+Rel(api_gw, auth, "Валидация токена", "Internal HTTP")
+Rel(api_gw, farm_svc, "Данные ферм, алерты", "Internal HTTP")
+Rel(api_gw, billing_svc, "Биллинг, подписка", "Internal HTTP")
+Rel(api_gw, tenant_svc, "Управление тенантом", "Internal HTTP")
+Rel(farm_edge, sync_receiver, "Синхронизация данных\n(API-ключ тенанта)", "HTTPS REST / TLS")
+Rel(sync_receiver, tenant_registry, "Lookup: API-ключ → tenant + conn string", "SQL")
+Rel(sync_receiver, pg_cluster, "Пишет в db_tenant_XXX", "SQL (dynamic connection)")
+Rel(sync_receiver, ts_cluster, "Метрики в db_tenant_XXX", "SQL (dynamic connection)")
+Rel(farm_svc, tenant_registry, "Получает connection string", "SQL")
+Rel(farm_svc, pg_cluster, "Читает/пишет БД тенанта", "SQL (dynamic connection)")
+Rel(farm_svc, ts_cluster, "Временные ряды тенанта", "SQL (dynamic connection)")
+Rel(billing_svc, billing_db, "Счета и подписки", "SQL")
+Rel(billing_svc, payment, "Проведение платежей", "HTTPS / REST")
+Rel(tenant_svc, db_provisioner, "Запрос создания БД", "Internal HTTP")
+Rel(db_provisioner, pg_cluster, "CREATE DATABASE, применение миграций", "SQL DDL")
+Rel(db_provisioner, ts_cluster, "CREATE DATABASE", "SQL DDL")
+Rel(db_provisioner, tenant_registry, "Сохранение conn string", "SQL")
+Rel(tenant_user, dev_portal, "Документация, SDK, onboarding", "HTTPS")
+
+@enduml

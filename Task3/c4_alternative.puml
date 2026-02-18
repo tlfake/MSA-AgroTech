@@ -1,0 +1,193 @@
+@startuml C4_Alternative_InferenceWorker
+!define RELATIVE_INCLUDE ../lib
+!include ../lib/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Диаграмма кода (C4) — Альтернативное решение: Централизованная архитектура\nКомпонент: Inference Worker (AI Engine Cluster / Triton)
+
+skinparam class {
+    BackgroundColor #85BBF0
+    BorderColor #78A8D8
+    FontColor #000000
+    ArrowColor #555555
+}
+skinparam backgroundColor white
+skinparam shadowing false
+
+package "triton_backend (Python / C++ TensorRT backend)" {
+
+    class TritonModelBackend {
+        - model_config: ModelConfig
+        - trt_engine: TRTEngine
+        - cuda_stream: CUDAStream
+        --
+        + initialize(args: dict): void
+        + execute(requests: List[InferenceRequest]): List[InferenceResponse]
+        + finalize(): void
+        - _preprocess(input_tensor: Tensor): Tensor
+        - _postprocess(output_tensor: Tensor): List[RawDetection]
+    }
+
+    class ModelConfig {
+        + model_name: str
+        + model_version: int
+        + max_batch_size: int
+        + input_config: InputConfig
+        + output_config: OutputConfig
+        + dynamic_batching: DynamicBatchingConfig
+        + instance_group: InstanceGroupConfig
+        --
+        + from_protobuf(config_pbtxt: str): ModelConfig
+        + validate(): void
+    }
+
+    class DynamicBatchingConfig {
+        + preferred_batch_size: List[int]
+        + max_queue_delay_us: int
+        + priority_queue_policy: dict
+        --
+        + to_protobuf(): str
+    }
+
+    class InstanceGroupConfig {
+        + kind: str  ' "KIND_GPU"
+        + count: int  ' число воркеров на GPU
+        + gpus: List[int]
+        --
+        + is_gpu(): bool
+    }
+
+    class TRTEngine {
+        - engine_path: str
+        - context: trt.IExecutionContext
+        - bindings: List[int]
+        - cuda_stream: CUDAStream
+        --
+        + build_or_load(onnx_path: str, config: TRTBuildConfig): TRTEngine
+        + infer(input_data: np.ndarray): np.ndarray
+        + get_binding_shape(name: str): Tuple
+        - _allocate_buffers(): void
+    }
+
+    class TRTBuildConfig {
+        + fp16_enabled: bool
+        + int8_enabled: bool
+        + workspace_size_mb: int
+        + calibrator: Optional[IInt8Calibrator]
+        --
+        + to_builder_config(builder): trt.IBuilderConfig
+    }
+
+    class InferenceRequest {
+        + request_id: str
+        + farm_id: str
+        + camera_id: str
+        + input_tensors: Dict[str, Tensor]
+        + timestamp: datetime
+        --
+        + get_input(name: str): Tensor
+    }
+
+    class InferenceResponse {
+        + request_id: str
+        + output_tensors: Dict[str, Tensor]
+        + error: Optional[TritonError]
+        --
+        + set_output(name: str, tensor: Tensor): void
+        + has_error(): bool
+    }
+
+    class RawDetection {
+        + bbox_xyxy: List[float]
+        + class_id: int
+        + confidence: float
+        --
+        + to_dict(): dict
+    }
+
+    class CUDAStream {
+        - stream: cuda.Stream
+        --
+        + synchronize(): void
+        + copy_to_device(data: np.ndarray): DeviceBuffer
+        + copy_to_host(buf: DeviceBuffer): np.ndarray
+    }
+}
+
+package "tracker_service (Python / FastAPI)" {
+
+    class TrackerFarmState {
+        - farm_id: str
+        - tracks: Dict[int, Track]
+        - next_track_id: int
+        - last_updated: datetime
+        --
+        + update(detections: List[RawDetection]): List[Track]
+        + get_active_tracks(): List[Track]
+        + cleanup_stale(max_age_s: int): void
+    }
+
+    class Track {
+        + track_id: int
+        + bbox: List[float]
+        + class_id: int
+        + hits: int
+        + age: int
+        + kalman_filter: KalmanFilter
+        --
+        + predict(): List[float]
+        + update(detection: RawDetection): void
+        + is_confirmed(): bool
+    }
+
+    class SORTTracker {
+        - iou_threshold: float
+        - max_age: int
+        - min_hits: int
+        --
+        + update(detections: List[RawDetection]): List[Track]
+        - _associate(tracks, dets): Tuple[List, List, List]
+    }
+}
+
+' Relationships
+TritonModelBackend --> ModelConfig : конфигурируется
+TritonModelBackend --> TRTEngine : использует для инференса
+TritonModelBackend --> CUDAStream : управляет
+TritonModelBackend ..> InferenceRequest : принимает
+TritonModelBackend ..> InferenceResponse : возвращает
+TritonModelBackend ..> RawDetection : создаёт
+
+ModelConfig --> DynamicBatchingConfig : содержит
+ModelConfig --> InstanceGroupConfig : содержит
+TRTEngine --> TRTBuildConfig : строится с
+TRTEngine --> CUDAStream : использует
+
+TrackerFarmState --> SORTTracker : делегирует обновление
+TrackerFarmState --> Track : хранит коллекцию
+SORTTracker ..> RawDetection : принимает
+
+RawDetection ..> TrackerFarmState : передаётся из Triton backend
+
+note right of DynamicBatchingConfig
+  max_queue_delay_us = 2000 (2 мс).
+  Triton ждёт до 2 мс для сборки
+  батча из фреймов разных ферм.
+  Повышает утилизацию GPU.
+end note
+
+note right of InstanceGroupConfig
+  kind = KIND_GPU, count = 2-4.
+  Каждый GPU запускает N параллельных
+  воркеров для максимального
+  throughput.
+end note
+
+note bottom of TRTBuildConfig
+  fp16_enabled = true для A100/H100.
+  Даёт ~2x speedup при приемлемой
+  потере точности (< 0.5% mAP).
+end note
+
+@enduml
