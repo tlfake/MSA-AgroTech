@@ -1,0 +1,69 @@
+@startuml C2_AgroTech_Integration
+!define RELATIVE_INCLUDE ../lib
+!include ../lib/C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Контейнерная диаграмма (C2) — Интеграция АгроПром Х как клиента SaaS-платформы\nПример первого тенанта — внутренняя компания-владелец SaaS
+
+Person(director, "Директор хозяйства\n(АгроПром Х)", "Использует веб-портал\nи получает сводные отчёты")
+Person(vet, "Ветеринар\n(АгроПром Х)", "Мониторинг здоровья\nживотных через портал")
+Person(operator, "Оператор фермы\n(АгроПром Х)", "Получает локальные алерты\nна ферме через edge-интерфейс")
+
+System_Ext(saas_platform, "SaaS-платформа\n(Public API + Sync Receiver)", "Сама платформа как\nвнешняя система для\nклиента АгроПром Х")
+System_Ext(notif, "Каналы уведомлений", "SMS / Push / Email")
+
+Enterprise_Boundary(agrotech_tenant, "АгроПром Х — тенант SaaS (tenant_id: agrotech)") {
+
+    System_Boundary(edge_tier, "Edge-уровень (на каждой ферме)") {
+
+        Container(farm_agent_1, "Edge AI Агент\n[Ферма №1]", "Python / Go\nNVIDIA Jetson", "Видеоаналитика, управление\nоборудованием, автономная работа.\nAPI-ключ тенанта agrotech.")
+
+        Container(farm_agent_n, "Edge AI Агент\n[Ферма №N]", "Python / Go\nNVIDIA Jetson", "Идентичный агент.\nAPI-ключ тенанта agrotech.\n(N = текущее число ферм)")
+    }
+
+    System_Boundary(integration_tier, "Интеграционный уровень (в ИТ-контуре АгроПром Х)") {
+
+        Container(api_adapter, "SaaS API Adapter", "Go / Python", "Периодически опрашивает\nPublic API SaaS-платформы.\nПреобразует данные мониторинга\nв формат ERP и DWH.")
+
+        Container(webhook_handler, "Webhook Handler", "Go", "Принимает webhook-события\nот SaaS (алерты, смерть, болезнь).\nФормирует задачи в ERP.")
+
+        Container(agrotech_portal, "АгроПром Х Portal\n(расширение)", "React", "Встраивает виджеты SaaS:\nпоголовье, алерты, видео.\nЕдиная точка входа для\nвсех систем компании.")
+    }
+
+    System_Boundary(existing_systems, "Существующие системы АгроПром Х") {
+
+        Container(erp_1c, "ERP (1С:Агро)", "1С", "Финансы, склад, кадры,\nветеринарные мероприятия.\nПолучает задачи из Webhook Handler.")
+
+        Container(dwh, "Data Warehouse", "ClickHouse", "Аналитическое хранилище.\nПолучает данные поголовья\nи метрики из API Adapter.")
+
+        Container(bi, "BI-система", "Power BI", "Сводные отчёты с\nобъединёнными данными ERP,\nDWH и мониторинга скота.")
+
+        Container(existing_iot, "Существующая IoT-платформа\n(поля, теплицы)", "Node-RED / Kafka", "Мониторинг полей и теплиц.\nПараллельная система,\nне пересекается со скотом.")
+    }
+}
+
+' === Пользователи ===
+Rel(director, agrotech_portal, "Единый портал:\nфермы, ERP, мониторинг скота", "HTTPS")
+Rel(vet, saas_platform, "Доступ через SaaS Web Portal\n(tenant agrotech)", "HTTPS")
+Rel(operator, farm_agent_1, "Локальный интерфейс,\nалерты на ферме", "Локальный веб")
+
+' === Edge ↔ SaaS ===
+Rel(farm_agent_1, saas_platform, "Синхронизация данных\n(batch HTTPS, API-ключ agrotech)", "HTTPS REST / TLS")
+Rel(farm_agent_n, saas_platform, "Синхронизация данных\n(batch HTTPS, API-ключ agrotech)", "HTTPS REST / TLS")
+
+' === SaaS ↔ интеграционный уровень ===
+Rel(saas_platform, webhook_handler, "Webhook: алерт, гибель,\nболезнь животного", "HTTPS POST")
+Rel(api_adapter, saas_platform, "Polling: поголовье, метрики,\nсводка по фермам", "HTTPS REST API")
+Rel(saas_platform, notif, "Уведомления ветеринарам\nи менеджерам", "SMS / Push / Email")
+
+' === Внутренние интеграции ===
+Rel(webhook_handler, erp_1c, "Создание задач\nветеринарных мероприятий", "REST API / 1С интеграция")
+Rel(api_adapter, dwh, "Загрузка данных мониторинга\nв аналитическое хранилище", "ETL / ClickHouse Insert")
+Rel(dwh, bi, "Аналитические данные", "SQL / Power BI Connector")
+Rel(erp_1c, dwh, "Бизнес-данные", "ETL")
+Rel(agrotech_portal, saas_platform, "Виджеты мониторинга\nчерез Public API", "HTTPS REST API")
+Rel(agrotech_portal, erp_1c, "Бизнес-данные", "REST API")
+Rel(agrotech_portal, bi, "Отчёты", "Embed / REST")
+
+@enduml

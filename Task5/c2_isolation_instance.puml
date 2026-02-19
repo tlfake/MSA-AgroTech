@@ -1,0 +1,69 @@
+@startuml C2_Isolation_InstancePerTenant
+!define RELATIVE_INCLUDE ../lib
+!include ../lib/C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Вариант изоляции данных C: Инстанс на тенанта (Instance-per-Tenant)\nПолностью изолированный стек для каждого крупного клиента
+
+Person(tenant_user, "Пользователь клиента", "Оператор / менеджер\nфермерского холдинга")
+Person(admin, "Платформенный\nадминистратор", "Управляет SaaS-платформой")
+
+System_Ext(farm_edge, "Edge-агент фермы\n(клиентское оборудование)", "Edge AI агент на ферме\nклиента (Решение А)")
+System_Ext(payment, "Платёжные системы\n(ЮКасса, Сбербанк)", "Российские платёжные шлюзы")
+
+Enterprise_Boundary(saas, "SaaS Control Plane\n(управляющий уровень — shared)") {
+
+    Container(cp_api, "Control Plane API", "Go", "Регистрация тенантов,\nпровизионирование инстансов,\nуправление тарифами и биллингом.")
+
+    Container(billing_svc, "Billing Service", "Go", "Тарификация, подписки,\nметрики использования,\nинтеграция с платёжными системами.")
+
+    Container(dev_portal, "Developer Portal", "Docusaurus / React", "Документация, SDK, API-ключи,\nself-service онбординг.")
+
+    Container(provisioner, "Instance Provisioner", "Go / Terraform / Helm", "Автоматически создаёт\nизолированный стек тенанта:\nk8s namespace, все сервисы,\nсобственные БД, сети.")
+
+    ContainerDb(control_db, "Control Plane DB", "PostgreSQL", "Реестр тенантов, endpoints,\nстатус инстансов, биллинг.")
+}
+
+Enterprise_Boundary(tenant_instance, "Tenant Instance (Изолированный стек — пример для клиента X)") {
+
+    Container(t_api_gw, "API Gateway\n[tenant-X]", "Kong / Nginx", "Изолированный шлюз тенанта.\nJWT, rate-limiting, TLS.")
+
+    Container(t_auth, "Auth Service\n[tenant-X]", "Keycloak (realm-X)", "Изолированный IAM.\nСвои пользователи и роли.")
+
+    Container(t_farm_svc, "Farm & Analytics\n[tenant-X]", "Go / Python", "Бизнес-логика только\nдля данного клиента.")
+
+    Container(t_sync, "Sync Receiver\n[tenant-X]", "Go", "Принимает данные только\nот ферм клиента X.")
+
+    Container(t_web, "Web UI\n[tenant-X]", "React", "Опционально: white-label\nинтерфейс для клиента.")
+
+    ContainerDb(t_db, "PostgreSQL\n[tenant-X]", "PostgreSQL", "Полностью изолированная СУБД.\nТолько данные клиента X.")
+
+    ContainerDb(t_tsdb, "TimescaleDB\n[tenant-X]", "TimescaleDB", "Временные ряды\nтолько клиента X.")
+}
+
+Rel(tenant_user, t_api_gw, "Работает с платформой", "HTTPS (tenant-X.domain.com)")
+Rel(admin, cp_api, "Управляет тенантами", "HTTPS / Admin API")
+Rel(t_api_gw, t_auth, "Валидация токена", "Internal HTTP")
+Rel(t_api_gw, t_farm_svc, "Бизнес-запросы", "Internal HTTP")
+Rel(farm_edge, t_sync, "Синхронизация данных", "HTTPS REST / TLS")
+Rel(t_sync, t_db, "Запись данных ферм", "SQL")
+Rel(t_sync, t_tsdb, "Запись метрик", "SQL")
+Rel(t_farm_svc, t_db, "Данные тенанта", "SQL")
+Rel(t_farm_svc, t_tsdb, "Временные ряды", "SQL")
+Rel(cp_api, provisioner, "Запрос создания инстанса", "Internal HTTP")
+Rel(provisioner, control_db, "Сохранение endpoint тенанта", "SQL")
+Rel(billing_svc, payment, "Проведение платежей", "HTTPS / REST")
+Rel(billing_svc, control_db, "Биллинговые данные", "SQL")
+Rel(tenant_user, dev_portal, "Документация, onboarding", "HTTPS")
+Rel(cp_api, control_db, "Реестр тенантов", "SQL")
+
+note right of provisioner
+  Каждый инстанс = k8s namespace
+  с полным набором микросервисов.
+  Время провизионирования: ~5–15 мин.
+  Подходит для Enterprise-клиентов
+  с требованиями к изоляции данных.
+end note
+
+@enduml

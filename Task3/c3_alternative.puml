@@ -1,0 +1,65 @@
+@startuml C3_Alternative_AICluster
+!define RELATIVE_INCLUDE ../lib
+!include ../lib/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Компонентная диаграмма (C3) — Альтернативное решение: Централизованная архитектура\nКонтейнер: AI Engine Cluster (Централизованная платформа)
+
+' === Внешние участники и контейнеры ===
+Container(video_ingestor, "Video Ingestor", "Python / GStreamer", "Поставляет фреймы из\nвидеопотоков всех ферм")
+Container(central_broker, "Message Broker", "Apache Kafka", "Центральная шина сообщений")
+Container(event_processor, "Event Processor", "Go / Kafka Streams", "Обрабатывает потоки событий")
+ContainerDb(central_db, "Central Database", "PostgreSQL", "Хранилище событий всех ферм")
+ContainerDb(model_registry, "Model Registry", "MLflow / MinIO", "Реестр и хранилище версий\nнейросетевых моделей")
+ContainerDb(gpu_infra, "GPU Cluster", "NVIDIA A100/H100", "Физические GPU-ресурсы")
+
+' === AI Engine Cluster контейнер ===
+Container_Boundary(ai_cluster, "AI Engine Cluster — NVIDIA Triton Inference Server") {
+
+    Component(grpc_frontend, "gRPC / HTTP Frontend", "Triton built-in", "Принимает запросы на инференс.\nПоддерживает gRPC и HTTP/REST.\nАутентификация запросов.")
+
+    Component(request_router, "Request Router", "Triton / Python", "Маршрутизирует запросы\nпо моделям и версиям.\nA/B тестирование моделей\nмежду вариантами.")
+
+    Component(dynamic_batcher, "Dynamic Batcher", "Triton built-in", "Объединяет фреймы с разных ферм\nв батчи для GPU-инференса.\nМаксимизирует утилизацию GPU.\nНастраиваемый timeout батча.")
+
+    Component(model_scheduler, "Model Scheduler", "Triton built-in", "Планирование инференса:\nприоритизация по ферме,\nконкурентные запросы,\nмультиинстанс на GPU.")
+
+    Component(inference_worker, "Inference Worker\n(×N реплик)", "Python / TensorRT\n+ CUDA", "N параллельных воркеров на GPU.\nЗагружает модель в VRAM.\nВыполняет инференс.\nВозвращает bbox+классы+score.")
+
+    Component(postprocessor, "Post-processor", "Python / Triton ensemble", "NMS (non-max suppression),\nфильтрация по confidence score,\nденормализация координат bbox.")
+
+    Component(tracker_service, "Tracker Service", "Python / FastAPI", "Трекинг объектов между кадрами\nперцептивно по каждой ферме.\nХранит состояние треков\nв Redis (per-farm).")
+
+    Component(behavior_analyzer, "Behavior Analyzer", "Python / FastAPI", "Анализирует поведение по трекам:\nдраки, задавливание, болезни.\nПубликует события в Kafka.")
+
+    Component(headcount_service, "Headcount Service", "Python / FastAPI", "Подсчёт поголовья по ферме.\nАгрегация и сравнение\nс предыдущими показателями.")
+
+    Component(model_updater, "Model Updater", "Python", "Мониторит Model Registry.\nАвтоматически обновляет модели\nна Triton при появлении\nновых версий без остановки.")
+
+    Component(metrics_exporter, "Metrics Exporter", "Triton built-in\n+ Python", "Экспорт Prometheus-метрик:\nlatency, throughput, GPU util,\nqueue depth по каждой ферме.")
+}
+
+' === Связи ===
+Rel(video_ingestor, central_broker, "Фреймы (по топику на ферму)", "Kafka")
+Rel(central_broker, grpc_frontend, "Batch запросы на инференс", "Kafka Consumer → gRPC")
+
+Rel(grpc_frontend, request_router, "Входящие запросы", "Internal")
+Rel(request_router, dynamic_batcher, "Запросы к модели", "Internal")
+Rel(dynamic_batcher, model_scheduler, "Батч фреймов", "Internal")
+Rel(model_scheduler, inference_worker, "Исполнение батча на GPU", "CUDA / Internal")
+Rel(inference_worker, gpu_infra, "Вычисления на GPU", "CUDA")
+Rel(inference_worker, postprocessor, "Сырые тензоры предсказаний", "Internal")
+Rel(postprocessor, tracker_service, "Обработанные bbox + классы", "HTTP / gRPC")
+Rel(tracker_service, behavior_analyzer, "Треки объектов", "HTTP")
+Rel(tracker_service, headcount_service, "Треки объектов", "HTTP")
+Rel(behavior_analyzer, central_broker, "События поведения", "Kafka / publish")
+Rel(headcount_service, central_broker, "События пересчёта поголовья", "Kafka / publish")
+Rel(central_broker, event_processor, "Готовые события", "Kafka")
+
+Rel(model_updater, model_registry, "Мониторинг новых версий", "HTTP / S3")
+Rel(model_updater, request_router, "Обновление активной модели", "Triton Management API")
+
+Rel(metrics_exporter, central_db, "Метрики кластера", "Prometheus remote write")
+
+@enduml
